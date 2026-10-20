@@ -17,8 +17,9 @@ Group 3 submission for Assignment 7 (AI Engineering Fundamental, Batch 2). We me
 | [final/task1_polarization.csv](final/task1_polarization.csv), [task2_type.csv](final/task2_type.csv), [task3_manifestation.csv](final/task3_manifestation.csv) | Stage 2: de-duplicated model-ready files (`id`, `text`, labels) |
 | [baseline_traditional_ml/](baseline_traditional_ml/) | TF-IDF + Logistic Regression / Linear SVM notebook and the train / val / test `splits/` used by every model |
 | [deep_models/](deep_models/) | Bi-LSTM, Transformer and XLM-R training code, result files, logs, the comparison notebook, and the error analysis |
+| [assignment-7-thein-kyaw-lwin/](assignment-7-thein-kyaw-lwin/) | Thein Kyaw Lwin's multi-task experiment (XLM-R, mBERT, word and syllable Bi-LSTM, trained on Kaggle) with its own cleaning, split and tokenizer notes; see [Multi-task experiment](#multi-task-experiment-thein-kyaw-lwin) |
 | [myPolar_Assignment7_G3.pptx](myPolar_Assignment7_G3.pptx) | Presentation slides with speaker notes |
-| `myPolar_dataset.zip`, `baseline_traditional_ml.zip` | Zipped copies of `final/` and `baseline_traditional_ml/` |
+| `myPolar_dataset.zip`, `baseline_traditional_ml.zip`, `assignment-7-thein-kyaw-lwin.zip` | Zipped copies of `final/`, `baseline_traditional_ml/` and `assignment-7-thein-kyaw-lwin/` |
 
 ## Data
 
@@ -134,6 +135,44 @@ The TF-IDF baseline makes 225 errors on 1,071 test sentences (108 false positive
 - **Task 3 labels are confused with each other.** Missed `dehumanization` is predicted as `vilification` in 64% of cases and missed `lack_of_empathy` in 59%. These labels often occur together and share vocabulary.
 - **Exact match** (all labels of a sentence correct) is 0.57 on Task 2 and 0.47 on Task 3.
 
+## Multi-task experiment (Thein Kyaw Lwin)
+
+[assignment-7-thein-kyaw-lwin/](assignment-7-thein-kyaw-lwin/) is a second, independent experiment on the same `final_dataset.csv`. One model predicts all three tasks at once (a shared encoder with three output heads), trained on a Kaggle T4 GPU.
+
+Differences from the main experiment:
+
+| | Main experiment | Multi-task experiment |
+|---|---|---|
+| Rows | 10,710 / 10,710 / 10,116 (per task) | 10,068 (all tasks) |
+| Cleaning | exact-text duplicates removed | also drops rows without `original_id` (1,200), rows missing any label, and duplicates with conflicting polarization; duplicates matched ignoring spaces |
+| Text | original spacing | re-segmented into words with `mmdt-tokenizer` |
+| Type / manifestation on non-polarized rows | cleared | kept (1,903 non-polarized rows carry a type) |
+| Split | separate 80 / 10 / 10 split per task | one multi-label stratified 80 / 10 / 10 split |
+| Models | one model per task | one model for all three tasks; epoch chosen on validation macro F1 averaged over the tasks |
+
+About half of his test sentences are in our training splits, so his scores cannot be put in the main results table. To compare the two, our TF-IDF baseline (same features, models and C grid, C chosen on validation) was trained and scored on his split with [deep_models/tkl_split_comparison.py](deep_models/tkl_split_comparison.py). His runs were rescored from their saved test predictions and match his reported numbers.
+
+Test macro F1 on his split (1,007 test sentences, single runs):
+
+| Model | Task 1 | Task 2 | Task 3 |
+|---|---|---|---|
+| TF-IDF + linear (our baseline) | 0.733 | 0.583 | 0.456 |
+| XLM-RoBERTa base, no class weights | **0.772** | 0.261 | 0.159 |
+| XLM-RoBERTa base | 0.769 | 0.556 | 0.449 |
+| mBERT (cased) | 0.760 | 0.565 | 0.448 |
+| Bi-LSTM + attention, words | 0.686 | 0.481 | 0.392 |
+| Bi-LSTM + attention, syllables | 0.734 | **0.604** | **0.461** |
+
+Per-label scores are in [deep_models/results/tkl_split_comparison.csv](deep_models/results/tkl_split_comparison.csv); his logs, predictions and per-epoch validation scores are in [assignment-7-thein-kyaw-lwin/kaggle/output/](assignment-7-thein-kyaw-lwin/kaggle/output/).
+
+What it adds to the main findings:
+
+1. **On this split the baseline is beaten.** XLM-R leads Task 1 by 0.04 and the syllable Bi-LSTM leads Task 2 by 0.02; Task 3 is a tie. The baseline's Task 1 score falls from 0.790 on our split to 0.733 here. Part of the reason is that the 1,200 rows he dropped (no `original_id`) were among the easiest for the baseline (Task 1 accuracy 0.93 on our test set). Spacing-only duplicates between train and test are not the cause: there are at most 4 in either split.
+2. **Class weights are essential for Tasks 2 and 3.** Without them XLM-R predicts almost no minority labels (Task 2 0.26, Task 3 0.16); with them it reaches 0.56 and 0.45. Task 1 does not change.
+3. **Syllables beat words for the Bi-LSTM again** (+0.05 to +0.12), which confirms our input-unit comparison on a different split and a different word segmenter.
+4. **XLM-R and mBERT are within 0.01 of each other** on every task. [tokenizer.md](assignment-7-thein-kyaw-lwin/tokenizer.md) compares how their tokenizers split Myanmar text.
+5. **The ranking between models changes with the split,** while the gaps stay at 0.01 to 0.04. Together with finding 6 above, model differences of this size should be read as uncertain.
+
 ## How to reproduce
 
 ```bash
@@ -160,7 +199,12 @@ for t in task1 task2 task3; do for u in syllable word char; do
   python polar_models.py --model bilstm --task $t --unit $u --save_preds results/predictions --out results/unit_ablation_bilstm.csv
 done; done
 python error_analysis.py
+
+# 6. Multi-task experiment: our baseline on Thein Kyaw Lwin's split, and his runs rescored
+python tkl_split_comparison.py
 ```
+
+The multi-task models themselves are trained with the Kaggle kernels in `assignment-7-thein-kyaw-lwin/kaggle/` (`preprocess.py` builds `data/` first, and needs `mmdt-tokenizer` and `iterative-stratification`).
 
 Trained on an Apple M4 (16 GB) with PyTorch MPS. The Bi-LSTM and Transformer take 2–8 minutes per run; XLM-R takes about 20–30 minutes per task.
 
